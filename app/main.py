@@ -193,7 +193,7 @@ async def reserve(request: ReservationRequest, room_id: int) -> Dict[str, Any]:
     except requests.RequestException as e:
         return {"status": "error", "message": f"查询会议室信息失败: {e}", "data": {}}
 
-    # 再次检查时间冲突
+    # 检查时间冲突
     time_query = f"{BASE_URL}/reservations?room_id=eq.{room_id}&start_time=lt.{end_time}&end_time=gt.{start_time}"
     try:
         response = requests.get(time_query)
@@ -215,23 +215,49 @@ async def reserve(request: ReservationRequest, room_id: int) -> Dict[str, Any]:
 
     # 提交预定请求
     url = f"{BASE_URL}/reservations"
+    headers = {
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
     try:
-        response = requests.post(url, json=post_data, headers={"Content-Type": "application/json"})
-        check_response_status(response)  # 显式检查 201 状态码
-        reservation = response.json()
+        response = requests.post(url, json=post_data, headers=headers)
+        check_response_status(response)
+        logger.info(f"服务器响应状态码: {response.status_code}, 内容: {response.text}")
+        reservation = response.json()  # 返回的是列表 [{"id": 21, ...}]
+        if reservation and isinstance(reservation, list) and len(reservation) > 0:
+            reservation_id = reservation[0].get("id", 0)
+        else:
+            logger.warning("返回的响应为空或格式不正确，设置 reservation_id 为 0")
+            reservation_id = 0
+
+        # 查询最近的五个预定请求
+        recent_query = f"{BASE_URL}/reservations?order=created_at.desc&limit=5"
+        try:
+            response = requests.get(recent_query)
+            check_response_status(response)
+            recent_reservations = response.json()
+        except requests.RequestException as e:
+            logger.error(f"查询最近预定失败: {e}")
+            recent_reservations = []
+
         return {
             "status": "success",
             "message": f"会议室 {room_number} 预定成功，时间：{start_time}-{end_time}",
             "data": {
-                "reservation_id": reservation.get("id", 0),
+                "reservation_id": reservation_id,
                 "room_id": room_id,
                 "room_number": room_number,
                 "start_time": start_time,
-                "end_time": end_time
+                "end_time": end_time,
+                "recent_reservations": recent_reservations  # 返回最近五个预定
             }
         }
     except requests.RequestException as e:
+        logger.error(f"预定失败: {e}")
         return {"status": "error", "message": f"预定失败: {e}", "data": {}}
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON解析失败: {e}, 原始响应: {response.text}")
+        return {"status": "error", "message": f"响应解析失败: {e}", "data": {}}
 
 # 接口 4：取消预定
 @app.delete("/api/cancel-reservation/{reservation_id}")
