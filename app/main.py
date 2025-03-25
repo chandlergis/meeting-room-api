@@ -14,6 +14,15 @@ app = FastAPI()
 BASE_URL = os.getenv("BASE_URL", "http://14.103.250.95:13000")
 
 # 入参模型
+# 入参模型，添加 room_id
+class ReservationRequest1(BaseModel):
+    room_id: int  # 新增 room_id 字段
+    meeting_title: str
+    start_time: str
+    end_time: str
+    meeting_level: str
+    capacity: int
+    reserved_by: str
 class ReservationRequest(BaseModel):
     meeting_title: str
     start_time: str
@@ -21,7 +30,8 @@ class ReservationRequest(BaseModel):
     meeting_level: str
     capacity: int
     reserved_by: str
-
+class CancelReservationRequest(BaseModel):
+    reservation_id: int
 # 出参模型
 class Room(BaseModel):
     room_id: int
@@ -40,6 +50,7 @@ class ReservationResponse(BaseModel):
     room_number: str
     start_time: str
     end_time: str
+
 def check_response_status(response: requests.Response) -> None:
     """
     检查 HTTP 响应状态码，处理 PostgREST 返回的 201 等状态码
@@ -168,16 +179,18 @@ async def room_details(room_id: int) -> Dict[str, Any]:
 
 # 接口 3：预定请求
 @app.post("/api/reserve")
-async def reserve(request: ReservationRequest, room_id: int) -> Dict[str, Any]:
+async def reserve(request: ReservationRequest1) -> Dict[str, Any]:
+    room_id = request.room_id  # 从请求体获取 room_id
     meeting_title = request.meeting_title
     start_time = request.start_time
     end_time = request.end_time
     reserved_by = request.reserved_by
 
-    if not all([meeting_title, start_time, end_time, reserved_by, room_id]):
+    # 检查所有必要参数
+    if not all([room_id, meeting_title, start_time, end_time, reserved_by]):
         return {
             "status": "error",
-            "message": "缺少必要参数：meeting_title, start_time, end_time, reserved_by, room_id",
+            "message": "缺少必要参数：room_id, meeting_title, start_time, end_time, reserved_by",
             "data": {}
         }
 
@@ -260,8 +273,10 @@ async def reserve(request: ReservationRequest, room_id: int) -> Dict[str, Any]:
         return {"status": "error", "message": f"响应解析失败: {e}", "data": {}}
 
 # 接口 4：取消预定
-@app.delete("/api/cancel-reservation/{reservation_id}")
-async def cancel_reservation(reservation_id: int) -> Dict[str, Any]:
+@app.delete("/api/cancel-reservation")
+async def cancel_reservation(request: CancelReservationRequest) -> Dict[str, Any]:
+    reservation_id = request.reservation_id  # 从请求体获取
+
     # 查询预定记录
     query = f"{BASE_URL}/reservations?id=eq.{reservation_id}"
     try:
@@ -269,14 +284,18 @@ async def cancel_reservation(reservation_id: int) -> Dict[str, Any]:
         check_response_status(response)
         reservations = response.json()
         if not reservations:
+            logger.warning(f"预定 ID {reservation_id} 不存在")
             return {"status": "error", "message": f"预定 ID {reservation_id} 不存在", "data": {}}
+        logger.info(f"找到预定记录: {reservations}")
     except requests.RequestException as e:
+        logger.error(f"查询预定记录失败: {e}")
         return {"status": "error", "message": f"查询预定记录失败: {e}", "data": {}}
 
     # 删除预定记录
     try:
         response = requests.delete(query)
-        check_response_status(response)  # 显式检查 204 或 200 状态码
+        check_response_status(response)  # 期待 204 No Content
+        logger.info(f"预定 ID {reservation_id} 已成功取消")
         return {
             "status": "success",
             "message": f"预定 ID {reservation_id} 已取消",
@@ -285,4 +304,5 @@ async def cancel_reservation(reservation_id: int) -> Dict[str, Any]:
             }
         }
     except requests.RequestException as e:
+        logger.error(f"取消预定失败: {e}")
         return {"status": "error", "message": f"取消预定失败: {e}", "data": {}}
